@@ -3354,7 +3354,7 @@ impl Connection {
             );
             let length =
                 Some((payload_len + payload_extra_len + payload_offset) as u64);
-            let payload_length = Some(payload_len as u64);
+            let payload_length = Some((payload_len + payload_extra_len) as u64);
             let qlog_raw_info = qlog::RawInfo {
                 length,
                 payload_length,
