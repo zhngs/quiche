@@ -4603,12 +4603,12 @@ mod tests {
         let mut s = Session::default().unwrap();
         s.handshake().unwrap();
 
-        let (stream, req) = s.send_request(false).unwrap();
+        let (r1_id, r1_hdrs) = s.send_request(false).unwrap();
 
         let mut recv_buf = vec![0; bytes.len()];
 
-        let ev_headers = Event::Headers {
-            list: req,
+        let r1_ev_headers = Event::Headers {
+            list: r1_hdrs,
             more_frames: true,
         };
 
@@ -4621,72 +4621,103 @@ mod tests {
             b.put_varint(frame::DATA_FRAME_TYPE_ID).unwrap();
             b.put_varint(bytes.len() as u64).unwrap();
             let off = b.off();
-            s.pipe.client.stream_send(stream, &d[..off], false).unwrap();
+            s.pipe.client.stream_send(r1_id, &d[..off], false).unwrap();
 
             assert_eq!(
-                s.pipe.client.stream_send(stream, &bytes[..5], false),
+                s.pipe.client.stream_send(r1_id, &bytes[..5], false),
                 Ok(5)
             );
 
             s.advance().ok();
         }
 
-        assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
+        assert_eq!(s.poll_server(), Ok((r1_id, r1_ev_headers)));
+        assert_eq!(s.poll_server(), Ok((r1_id, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         // Read the available body data.
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        assert_eq!(s.recv_body_server(r1_id, &mut recv_buf), Ok(5));
 
         // Send the remaining DATA payload.
-        assert_eq!(s.pipe.client.stream_send(stream, &bytes[5..], false), Ok(5));
+        assert_eq!(s.pipe.client.stream_send(r1_id, &bytes[5..], false), Ok(5));
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
+        assert_eq!(s.poll_server(), Ok((r1_id, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         // Read the rest of the body data.
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        assert_eq!(s.recv_body_server(r1_id, &mut recv_buf), Ok(5));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         // Send more data.
-        let body = s.send_body_client(stream, false).unwrap();
+        let r1_body = s.send_body_client(r1_id, false).unwrap();
 
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
+        assert_eq!(s.poll_server(), Ok((r1_id, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        assert_eq!(s.recv_body_server(r1_id, &mut recv_buf), Ok(r1_body.len()));
 
-        // Send more data, then HEADERS, then more data.
-        let body = s.send_body_client(stream, false).unwrap();
+        // Send a new request to ensure cross-stream events don't break rearming.
+        let (r2_id, r2_hdrs) = s.send_request(false).unwrap();
+        let r2_ev_headers = Event::Headers {
+            list: r2_hdrs,
+            more_frames: true,
+        };
+        let r2_body = s.send_body_client(r2_id, false).unwrap();
+
+        s.advance().ok();
+
+        assert_eq!(s.poll_server(), Ok((r2_id, r2_ev_headers)));
+        assert_eq!(s.poll_server(), Ok((r2_id, Event::Data)));
+        assert_eq!(s.recv_body_server(r2_id, &mut recv_buf), Ok(r2_body.len()));
+        assert_eq!(s.poll_server(), Err(Error::Done));
+
+        // Send more data on request 1, then trailing HEADERS.
+        let r1_body = s.send_body_client(r1_id, false).unwrap();
 
         let trailers = vec![Header::new(b"hello", b"world")];
 
         s.client
-            .send_headers(&mut s.pipe.client, stream, &trailers, false)
+            .send_headers(&mut s.pipe.client, r1_id, &trailers, true)
             .unwrap();
 
-        let ev_trailers = Event::Headers {
+        let r1_ev_trailers = Event::Headers {
+            list: trailers.clone(),
+            more_frames: false,
+        };
+
+        s.advance().ok();
+
+        assert_eq!(s.poll_server(), Ok((r1_id, Event::Data)));
+        assert_eq!(s.recv_body_server(r1_id, &mut recv_buf), Ok(r1_body.len()));
+
+        assert_eq!(s.poll_server(), Ok((r1_id, r1_ev_trailers)));
+        assert_eq!(s.poll_server(), Ok((r1_id, Event::Finished)));
+        assert_eq!(s.poll_server(), Err(Error::Done));
+
+        // Send more data on request 2, then trailing HEADERS.
+        let r2_body = s.send_body_client(r2_id, false).unwrap();
+
+        s.client
+            .send_headers(&mut s.pipe.client, r2_id, &trailers, false)
+            .unwrap();
+
+        let r2_ev_trailers = Event::Headers {
             list: trailers,
             more_frames: true,
         };
 
         s.advance().ok();
 
-        s.send_body_client(stream, false).unwrap();
+        assert_eq!(s.poll_server(), Ok((r2_id, Event::Data)));
+        assert_eq!(s.recv_body_server(r2_id, &mut recv_buf), Ok(r2_body.len()));
+        assert_eq!(s.poll_server(), Ok((r2_id, r2_ev_trailers)));
+        assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
+        let (r3_id, r3_hdrs) = s.send_request(false).unwrap();
 
-        assert_eq!(s.poll_server(), Ok((stream, ev_trailers)));
-
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
-
-        let (stream, req) = s.send_request(false).unwrap();
-
-        let ev_headers = Event::Headers {
-            list: req,
+        let r3_ev_headers = Event::Headers {
+            list: r3_hdrs,
             more_frames: true,
         };
 
@@ -4698,40 +4729,40 @@ mod tests {
             b.put_varint(frame::DATA_FRAME_TYPE_ID).unwrap();
             b.put_varint(bytes.len() as u64).unwrap();
             let off = b.off();
-            s.pipe.client.stream_send(stream, &d[..off], false).unwrap();
+            s.pipe.client.stream_send(r3_id, &d[..off], false).unwrap();
 
             s.advance().ok();
         }
 
-        assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
+        assert_eq!(s.poll_server(), Ok((r3_id, r3_ev_headers)));
+        assert_eq!(s.poll_server(), Ok((r3_id, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Err(Error::Done));
+        assert_eq!(s.recv_body_server(r3_id, &mut recv_buf), Err(Error::Done));
 
-        assert_eq!(s.pipe.client.stream_send(stream, &bytes[..5], false), Ok(5));
+        assert_eq!(s.pipe.client.stream_send(r3_id, &bytes[..5], false), Ok(5));
 
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
+        assert_eq!(s.poll_server(), Ok((r3_id, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        assert_eq!(s.recv_body_server(r3_id, &mut recv_buf), Ok(5));
 
-        assert_eq!(s.pipe.client.stream_send(stream, &bytes[5..], false), Ok(5));
+        assert_eq!(s.pipe.client.stream_send(r3_id, &bytes[5..], false), Ok(5));
         s.advance().ok();
 
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
+        assert_eq!(s.poll_server(), Ok((r3_id, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
-        assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(5));
+        assert_eq!(s.recv_body_server(r3_id, &mut recv_buf), Ok(5));
 
         // Buffer multiple data frames.
-        let body = s.send_body_client(stream, false).unwrap();
-        s.send_body_client(stream, false).unwrap();
-        s.send_body_client(stream, false).unwrap();
+        let body = s.send_body_client(r3_id, false).unwrap();
+        s.send_body_client(r3_id, false).unwrap();
+        s.send_body_client(r3_id, false).unwrap();
 
-        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
+        assert_eq!(s.poll_server(), Ok((r3_id, Event::Data)));
         assert_eq!(s.poll_server(), Err(Error::Done));
 
         {
@@ -4741,17 +4772,14 @@ mod tests {
             b.put_varint(frame::DATA_FRAME_TYPE_ID).unwrap();
             b.put_varint(0).unwrap();
             let off = b.off();
-            s.pipe.client.stream_send(stream, &d[..off], true).unwrap();
+            s.pipe.client.stream_send(r3_id, &d[..off], true).unwrap();
 
             s.advance().ok();
         }
 
         let mut recv_buf = vec![0; bytes.len() * 3];
 
-        assert_eq!(
-            s.recv_body_server(stream, &mut recv_buf),
-            Ok(body.len() * 3)
-        );
+        assert_eq!(s.recv_body_server(r3_id, &mut recv_buf), Ok(body.len() * 3));
     }
 
     #[test]
