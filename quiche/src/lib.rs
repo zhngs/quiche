@@ -4029,6 +4029,15 @@ impl Connection {
         self.streams.peer_streams_left_uni()
     }
 
+    /// Returns the current value of the local endpoint's max bidi streams.
+    ///
+    /// This can be useful to know if the peer has tried to reference a stream
+    /// that would otherwise exceed the concurrency limit that we have set.
+    #[inline]
+    pub fn local_max_streams_bidi(&self) -> u64 {
+        self.streams.max_streams_bidi()
+    }
+
     /// Initializes the stream's application data.
     ///
     /// This can be used by applications to store per-stream information without
@@ -4145,6 +4154,12 @@ impl Connection {
         }
 
         self.streams.writable()
+    }
+
+    /// Returns true if the stream has been collected.
+    #[inline]
+    pub fn is_stream_collected(&self, stream_id: u64) -> bool {
+        self.streams.is_collected(stream_id)
     }
 
     /// Returns the maximum possible size of egress UDP payloads.
