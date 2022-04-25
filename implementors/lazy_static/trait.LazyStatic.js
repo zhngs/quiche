@@ -1,0 +1,3 @@
+(function() {var implementors = {};
+implementors["quiche"] = [{"text":"impl <a class=\"trait\" href=\"https://docs.rs/lazy_static/1.4.0/lazy_static/trait.LazyStatic.html\" title=\"trait lazy_static::LazyStatic\">LazyStatic</a> for <a class=\"struct\" href=\"quiche/struct.QUICHE_EX_DATA_INDEX.html\" title=\"struct quiche::QUICHE_EX_DATA_INDEX\">QUICHE_EX_DATA_INDEX</a>","synthetic":false,"types":["quiche::tls::QUICHE_EX_DATA_INDEX"]}];
+if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
